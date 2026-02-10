@@ -1,2 +1,2 @@
 # sketchPad
-Launchpad - Sketchpad 
+Launchpad - sketchpad 
