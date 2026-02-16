@@ -1,0 +1,25 @@
+# Python virtual environments
+**/.venv/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+
+# Node
+infra/frontend/node_modules/
+infra/frontend/dist/
+infra/frontend/.env.local
+
+# Secrets — never commit these
+**/.env
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Session data (runtime, not committed)
+infra/backend/sessions/
