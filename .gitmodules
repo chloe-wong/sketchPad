@@ -1,0 +1,3 @@
+[submodule "models/GANmut"]
+	path = models/GANmut
+	url = https://github.com/stefanodapolito/GANmut
