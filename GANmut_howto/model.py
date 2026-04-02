@@ -99,7 +99,14 @@ class SketchPadModel:
                 if not generated_files:
                     return {"text": "Error: Folder created, but no image inside.", "image": None}
                 
-                actual_output_path = os.path.join(ganmut_output_dir, generated_files[0])
+                sys.stderr.write(f"DEBUG: All files before filter -> {generated_files}\n")
+                # filter out original iamge
+                edited_files = [f for f in generated_files if not f.startswith('original_')]
+
+                sys.stderr.write(f"DEBUG: Files after filter -> {edited_files}\n")
+                if not edited_files:
+                    return {"text": "Error: Only original image found, edited image missing.", "image": None}
+                actual_output_path = os.path.join(ganmut_output_dir, edited_files[0])
                 sys.stderr.write(f"DEBUG: found GANmut output at {actual_output_path}\n")
                 result_image = Image.open(actual_output_path).copy()
                 result_image.load()
