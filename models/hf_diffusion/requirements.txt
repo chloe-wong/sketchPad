@@ -1,0 +1,3 @@
+pillow
+huggingface-hub
+python-dotenv

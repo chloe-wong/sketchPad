@@ -1,0 +1,4 @@
+{
+  "name": "Hugging Face Diffusion",
+  "description": "Generate images using Hugging Face Inference API."
+}
