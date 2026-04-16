@@ -11,6 +11,7 @@
 # ──────────────────────────────────────────────────────────────────────────
 
 from PIL import Image
+import os
 from controlnet_aux import HEDdetector
 from diffusers import (
     ControlNetModel,
@@ -19,6 +20,7 @@ from diffusers import (
 )
 import numpy as np
 import torch
+from datetime import datetime
 
 
 class SketchPadModel:
@@ -31,13 +33,17 @@ class SketchPadModel:
             'runwayml/stable-diffusion-v1-5',
             controlnet=controlnet
         ).to(self.device)
+        # print("🚀 Loading ControlNet...", flush=True)
+
+        self.output_dir = "debug_outputs" 
+        os.makedirs(self.output_dir, exist_ok=True)
 
         self.hed = HEDdetector.from_pretrained(
             'lllyasviel/Annotators'
         ).to(self.device)
 
         self.num_images = 1
-        self.res = (190,190)
+        self.res = (100,100)
 
         self.pipe.safety_checker = None
         self.pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(self.pipe.scheduler.config)
@@ -52,6 +58,13 @@ class SketchPadModel:
             
         return np.array(curr_sketch).astype(np.uint8)
 
+    def _debug_save(self, image, prefix="gen"):
+        """Saves image to local folder so you can see progress without the UI."""
+        timestamp = datetime.now().strftime("%H%M%S")
+        filename = f"{self.output_dir}/{prefix}_{timestamp}.png"
+        image.save(filename)
+        # print(f"💾 Saved debug image to: {filename}", flush=True)
+
 
     def run_sketching(self, prompt, negative_prompt, curr_sketch):
 
@@ -59,12 +72,16 @@ class SketchPadModel:
         to_return = []
 
         for k in range(self.num_images):
+            # print(f"🎨 Starting Variant {k+1}/{self.num_images}...", flush=True)
             seed = np.random.randint(1000000)
 
-            new_image = self.sketch(prompt, negative_prompt, curr_sketch, seed=seed, num_steps=2)
+            new_image = self.sketch(prompt, negative_prompt, processed_canvas, seed=seed, num_steps=2)
+            self._debug_save(new_image, prefix=f"variant_{k}")
             to_return.append(new_image)
 
+        # print("🔍 Running Feedback Logic (HED)...", flush=True)
         feedback_sketch = self.feedback_logic(to_return, processed_canvas)
+        self._debug_save(feedback_sketch, prefix="feedback_final")
 
         return to_return + [feedback_sketch]
 
@@ -92,23 +109,30 @@ class SketchPadModel:
         return images[0]
     
     def feedback_logic(self, ai_images, current_canvas):
-        hed_results = [self.hed(img, scribble=True) for img in ai_images]
-    
-        # 2. Average the edges (results in white lines on black background)
-        avg_hed = np.mean([np.array(img) for img in hed_results], axis=0)
-        
-        # 3. Invert to get black lines on white background
-        inverted_ai_lines = 255.0 - avg_hed
-        
-        # 4. Lighten the AI lines so they look like "pencil guides"
-        # (Values closer to 255 are whiter/fainter)
-        pencil_guides = np.clip(inverted_ai_lines + 50, 0, 255)
-        
-        # 5. Multiply with user canvas (Like 'Multiply' layer in Photoshop)
-        # This keeps user's dark ink but adds the AI's light pencil guides
-        final_sketch = (current_canvas.astype(float) / 255.0) * (pencil_guides / 255.0)
-        
-        return Image.fromarray(np.uint8(final_sketch * 255.0))
+        try:
+            hed_results = [self.hed(img, scribble=True) for img in ai_images]
+            avg_hed = np.mean([np.array(img) for img in hed_results], axis=0)
+            
+            # Invert and lighten
+            inverted_ai_lines = 255.0 - avg_hed
+            pencil_guides = np.clip(inverted_ai_lines + 50, 0, 255)
+            
+            # CRITICAL: Match shapes exactly
+            if isinstance(current_canvas, Image.Image):
+                current_canvas = np.array(current_canvas)
+                
+            # Resize current_canvas to match the HED output dimensions
+            h, w = pencil_guides.shape[:2]
+            user_resized = np.array(Image.fromarray(current_canvas).resize((w, h)).convert("RGB"))
+            
+            # Perform the blend
+            final_sketch = (user_resized.astype(float) / 255.0) * (pencil_guides / 255.0)
+            return Image.fromarray(np.uint8(final_sketch * 255.0))
+            
+        except Exception as e:
+            # print(f"❌ Feedback Logic Error: {e}", flush=True)
+            # Fallback: just return the first AI image if math fails
+            return ai_images[0]
 
 
 
@@ -137,13 +161,47 @@ class SketchPadModel:
                 "image" (PIL.Image | None) — the modified image, or None if
                                              the canvas should stay unchanged
         """
-        # ── Your model logic here ──────────────────────────────────────────
+        if image is None:
+            return {"text": "Please upload an image to the canvas first.", "image": None}
 
+        if not prompt.strip():
+            return {"text": "Please describe what you want to change.", "image": None}
         result = self.run_sketching(prompt=prompt,negative_prompt=self.generate_negative_prompt(prompt),curr_sketch= image)
+            
+        output_image = result[-1]
         
+        if not isinstance(output_image, Image.Image):
+            # Force conversion if it's a numpy array
+            output_image = Image.fromarray(np.uint8(output_image))
+
         
 
         return {
-            "text": f'You said: "{prompt}"',
-            "image":result[-1],
+            "text": f"Success: {prompt}",
+            "image": output_image, # The framework handles turning this into a string
         }
+
+        # ── Your model logic here ──────────────────────────────────────────
+        try:
+            result = self.run_sketching(prompt=prompt,negative_prompt=self.generate_negative_prompt(prompt),curr_sketch= image)
+            
+            output_image = result[-1]
+            
+            if not isinstance(output_image, Image.Image):
+                # Force conversion if it's a numpy array
+                output_image = Image.fromarray(np.uint8(output_image))
+
+            
+
+            return {
+                "text": f"Success: {prompt}",
+                "image": output_image, # The framework handles turning this into a string
+            }
+
+        except Exception as e:
+            print(f"🔥 CRITICAL ERROR: {e}", flush=True)
+            # Return a valid JSON dictionary even if the AI fails
+            return {
+                "text": f"Error occurred: {str(e)}",
+                "image": image # Return original sketch so UI doesn't break
+            }
