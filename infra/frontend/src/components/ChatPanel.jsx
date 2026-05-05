@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import MessageBubble from './MessageBubble'
 import EmotionWheel from './EmotionWheel'
+import Manual from './Manual'
 
 export default function ChatPanel({ messages, onSend, loading, placeholder, selectedModel }) {
   const [text, setText] = useState('')
@@ -41,8 +42,9 @@ export default function ChatPanel({ messages, onSend, loading, placeholder, sele
       </div>
 
       {selectedModel === 'GANmut' && (
-        <div className="emotion-wheel-wrapper" 
-        style={{ 
+        <div 
+          className="emotion-wheel-wrapper" 
+          style={{ 
             display: 'flex', 
             justifyContent: 'flex-end', /* clinch right */
             padding: '0 10px 10px 0'
@@ -51,6 +53,10 @@ export default function ChatPanel({ messages, onSend, loading, placeholder, sele
           <EmotionWheel 
             onSelect={(formattedString) => setText(formattedString)} 
           />
+          
+          {/* manual added */}
+          <Manual />
+          
         </div>
       )}
 
