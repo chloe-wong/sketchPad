@@ -64,5 +64,5 @@ class SketchPadModel:
 
         return {
             "text": f'Applied: "{prompt}"',
-            "image": result_image
+            "image": result_image,
         }
