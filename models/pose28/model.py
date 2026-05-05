@@ -2,12 +2,12 @@
 model.py
 --------
 Two-phase SketchPadModel:
-  Phase 1: User uploads their sketch    → saves coordinates, shows overlay
-  Phase 2: User uploads reference sketch → shows side-by-side overlay
-                                           + similarity score banner
+  Phase 1: User uploads their sketch    → saves keypoints + overlay to disk
+  Phase 2: User uploads reference sketch → compares keypoints, returns
+                                           similarity score + per-limb feedback
 
-Session state is persisted to disk (tmp JSON + numpy files) so it survives
-the subprocess-per-call execution model used by runner.py.
+Session state is persisted to disk so it survives the subprocess-per-call
+execution model used by runner.py.
 """
 
 import logging
@@ -17,8 +17,6 @@ import tempfile
 
 import cv2
 import numpy as np
-import torch
-import torch.nn as nn
 from PIL import Image, ImageDraw
 from typing import Optional
 
@@ -28,27 +26,31 @@ logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s %(levelname)s %(message)s",
 )
+logging.getLogger("PIL").setLevel(logging.WARNING)
 _log = logging.getLogger("sketchpad")
 
 # ── Model paths ───────────────────────────────────────────────────────────────
 BASE       = os.path.dirname(__file__)
 MODELS_DIR = os.path.join(BASE, "sketch2pose_models")
 HRNET_PATH = os.path.join(MODELS_DIR, "hrn_w48_384x288.onnx")
-SPIN_PATH  = os.path.join(MODELS_DIR, "spin_model_smplx_eft_18.pt")
-SMPL_MEAN  = os.path.join(MODELS_DIR, "data", "smpl_mean_params.npz")
 
 # ── Session storage directory ─────────────────────────────────────────────────
 SESSION_DIR = os.path.join(tempfile.gettempdir(), "sketchpad_sessions")
 os.makedirs(SESSION_DIR, exist_ok=True)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-IMG_RES        = 224
 HRNET_IMG_SIZE = (288, 384)
 HRNET_MEAN     = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 HRNET_STD      = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-SPIN_MEAN      = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-SPIN_STD       = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
+# KPS index reference:
+# 0=Head,  1=Neck,
+# 2=RShoulder, 3=RArm, 4=RHand,
+# 5=LShoulder, 6=LArm, 7=LHand,
+# 8=Spine, 9=Hips,
+# 10=RUpperLeg, 11=RLeg, 12=RFoot,
+# 13=LUpperLeg, 14=LLeg, 15=LFoot,
+# 16=LToe, 17=RToe
 KPS = (
     "Head", "Neck",
     "Right Shoulder", "Right Arm", "Right Hand",
@@ -66,30 +68,15 @@ SKELETON = (
     (15,16),(12,17),
 )
 
-SPIN_JOINT_NAMES = (
-    "Hips","Left Upper Leg","Right Upper Leg","Spine",
-    "Left Leg","Right Leg","Spine1",
-    "Left Foot","Right Foot","Thorax",
-    "Left Toe","Right Toe","Neck",
-    "Left Shoulder","Right Shoulder","Head",
-    "Left ForeArm","Right ForeArm",
-    "Left Arm","Right Arm",
-    "Left Hand","Right Hand",
-)
-
-PE_KSP_TO_SPIN = {
-    "Head":"Head","Neck":"Neck",
-    "Right Shoulder":"Right ForeArm","Right Arm":"Right Arm","Right Hand":"Right Hand",
-    "Left Shoulder":"Left ForeArm","Left Arm":"Left Arm","Left Hand":"Left Hand",
-    "Spine":"Spine1","Hips":"Hips",
-    "Right Upper Leg":"Right Upper Leg","Right Leg":"Right Leg","Right Foot":"Right Foot",
-    "Left Upper Leg":"Left Upper Leg","Left Leg":"Left Leg","Left Foot":"Left Foot",
-    "Left Toe":"Left Toe","Right Toe":"Right Toe",
+# Limb groups: name → joint indices (root to tip)
+LIMB_GROUPS = {
+    "right arm":  [2, 3, 4],    # RShoulder → RArm → RHand
+    "left arm":   [5, 6, 7],    # LShoulder → LArm → LHand
+    "right leg":  [10, 11, 12], # RUpperLeg → RLeg → RFoot
+    "left leg":   [13, 14, 15], # LUpperLeg → LLeg → LFoot
+    "torso":      [9, 8, 1],    # Hips → Spine → Neck
+    "head":       [1, 0],       # Neck → Head
 }
-
-PARENTS   = [-1,0,0,0,1,2,3,4,5,6,7,8,9,9,9,12,13,14,16,17,18,19]
-BONE_LENS = [0,0.10,0.10,0.13,0.40,0.40,0.12,0.40,0.40,0.12,
-             0.10,0.10,0.15,0.15,0.15,0.13,0.27,0.27,0.27,0.27,0.18,0.18]
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -97,30 +84,27 @@ BONE_LENS = [0,0.10,0.10,0.13,0.40,0.40,0.12,0.40,0.40,0.12,
 # Phase 1 saves to these files; Phase 2 loads, compares, then deletes them.
 # ════════════════════════════════════════════════════════════════════════════
 
-SKETCH_JOINTS  = os.path.join(SESSION_DIR, "sketch_joints.npy")
 SKETCH_KPS     = os.path.join(SESSION_DIR, "sketch_kps.npy")
 SKETCH_OVERLAY = os.path.join(SESSION_DIR, "sketch_overlay.png")
 
 
 def _has_sketch() -> bool:
-    return os.path.exists(SKETCH_JOINTS)
+    return os.path.exists(SKETCH_KPS)
 
 
-def _save_sketch(joints_3d: np.ndarray, kps: np.ndarray, overlay: Image.Image):
-    np.save(SKETCH_JOINTS, joints_3d)
+def _save_sketch(kps: np.ndarray, overlay: Image.Image):
     np.save(SKETCH_KPS, kps)
     overlay.save(SKETCH_OVERLAY)
 
 
 def _load_sketch() -> tuple:
-    joints  = np.load(SKETCH_JOINTS)
     kps     = np.load(SKETCH_KPS)
     overlay = Image.open(SKETCH_OVERLAY).copy()
-    return joints, kps, overlay
+    return kps, overlay
 
 
 def _clear_sketch():
-    for p in [SKETCH_JOINTS, SKETCH_KPS, SKETCH_OVERLAY]:
+    for p in [SKETCH_KPS, SKETCH_OVERLAY]:
         if os.path.exists(p):
             os.remove(p)
 
@@ -210,139 +194,11 @@ def _hrnet_preprocess(img_bgr, pixel_std=200):
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# SPIN / HMR
+# Similarity score & per-limb feedback
 # ════════════════════════════════════════════════════════════════════════════
-
-def _rot6d_to_rotmat(x):
-    x  = x.view(-1, 3, 2)
-    a1, a2 = x[:,:,0], x[:,:,1]
-    b1 = nn.functional.normalize(a1)
-    b2 = nn.functional.normalize(
-        a2 - torch.einsum("bi,bi->b", b1, a2).unsqueeze(-1) * b1)
-    b3 = torch.cross(b1, b2, dim=1)  # compatible with all PyTorch versions
-    return torch.stack((b1, b2, b3), dim=-1)
-
-class _Bottleneck(nn.Module):
-    expansion = 4
-    def __init__(self, inplanes, planes, stride=1, downsample=None):
-        super().__init__()
-        self.conv1 = nn.Conv2d(inplanes, planes, 1, bias=False)
-        self.bn1   = nn.BatchNorm2d(planes)
-        self.conv2 = nn.Conv2d(planes, planes, 3, stride=stride, padding=1, bias=False)
-        self.bn2   = nn.BatchNorm2d(planes)
-        self.conv3 = nn.Conv2d(planes, planes*4, 1, bias=False)
-        self.bn3   = nn.BatchNorm2d(planes*4)
-        self.relu  = nn.ReLU(inplace=True)
-        self.downsample = downsample
-    def forward(self, x):
-        r   = x
-        out = self.relu(self.bn1(self.conv1(x)))
-        out = self.relu(self.bn2(self.conv2(out)))
-        out = self.bn3(self.conv3(out))
-        if self.downsample: r = self.downsample(x)
-        return self.relu(out + r)
-
-class _HMR(nn.Module):
-    def __init__(self, smpl_mean_params):
-        super().__init__()
-        self.inplanes = 64
-        npose = 144
-        self.conv1   = nn.Conv2d(3, 64, 7, stride=2, padding=3, bias=False)
-        self.bn1     = nn.BatchNorm2d(64)
-        self.relu    = nn.ReLU(inplace=True)
-        self.maxpool = nn.MaxPool2d(3, stride=2, padding=1)
-        self.layer1  = self._make_layer(_Bottleneck, 64,  3)
-        self.layer2  = self._make_layer(_Bottleneck, 128, 4, stride=2)
-        self.layer3  = self._make_layer(_Bottleneck, 256, 6, stride=2)
-        self.layer4  = self._make_layer(_Bottleneck, 512, 3, stride=2)
-        self.avgpool = nn.AvgPool2d(7, stride=1)
-        self.fc1     = nn.Linear(2048+npose+10+3, 1024)
-        self.drop1   = nn.Dropout()
-        self.fc2     = nn.Linear(1024, 1024)
-        self.drop2   = nn.Dropout()
-        self.decpose  = nn.Linear(1024, npose)
-        self.decshape = nn.Linear(1024, 10)
-        self.deccam   = nn.Linear(1024, 3)
-        nn.init.xavier_uniform_(self.decpose.weight,  gain=0.01)
-        nn.init.xavier_uniform_(self.decshape.weight, gain=0.01)
-        nn.init.xavier_uniform_(self.deccam.weight,   gain=0.01)
-        mean = np.load(smpl_mean_params)
-        self.register_buffer("init_pose",  torch.from_numpy(mean["pose"][:]).unsqueeze(0))
-        self.register_buffer("init_shape", torch.from_numpy(mean["shape"][:].astype("float32")).unsqueeze(0))
-        self.register_buffer("init_cam",   torch.from_numpy(mean["cam"]).unsqueeze(0))
-
-    def _make_layer(self, block, planes, blocks, stride=1):
-        ds = None
-        if stride != 1 or self.inplanes != planes * block.expansion:
-            ds = nn.Sequential(
-                nn.Conv2d(self.inplanes, planes*block.expansion, 1, stride=stride, bias=False),
-                nn.BatchNorm2d(planes*block.expansion))
-        layers = [block(self.inplanes, planes, stride, ds)]
-        self.inplanes = planes * block.expansion
-        for _ in range(1, blocks):
-            layers.append(block(self.inplanes, planes))
-        return nn.Sequential(*layers)
-
-    def forward(self, x, n_iter=3):
-        B  = x.shape[0]
-        pp = self.init_pose.expand(B, -1)
-        ps = self.init_shape.expand(B, -1)
-        pc = self.init_cam.expand(B, -1)
-        x  = self.maxpool(self.relu(self.bn1(self.conv1(x))))
-        xf = self.avgpool(
-                self.layer4(self.layer3(self.layer2(self.layer1(x))))
-             ).view(B, -1)
-        for _ in range(n_iter):
-            xc = self.drop1(torch.relu(self.fc1(torch.cat([xf, pp, ps, pc], 1))))
-            xc = self.drop2(torch.relu(self.fc2(xc)))
-            pp = self.decpose(xc)  + pp
-            ps = self.decshape(xc) + ps
-            pc = self.deccam(xc)   + pc
-        return _rot6d_to_rotmat(pp).view(B, 24, 3, 3), ps, pc
-
-def _spin_preprocess(img_bgr):
-    img = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-    img = cv2.resize(img, (IMG_RES, IMG_RES)).astype(np.float32) / 255.0
-    img = (img - SPIN_MEAN) / SPIN_STD
-    return torch.from_numpy(img.transpose(2,0,1)).unsqueeze(0).float()
-
-def _rotmat_to_joints(rotmat, camera):
-    positions   = np.zeros((22, 3), dtype=np.float32)
-    global_rots = [np.eye(3)] * 22
-    for j in range(22):
-        p = PARENTS[j]
-        if p == -1:
-            global_rots[j] = rotmat[j]
-        else:
-            global_rots[j] = global_rots[p] @ rotmat[j]
-            positions[j]   = positions[p] + global_rots[p] @ np.array([0, BONE_LENS[j], 0])
-    positions[:, 0] += camera[1]
-    positions[:, 1] += camera[2]
-    return camera[0] * positions
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# Similarity score & feedback
-# ════════════════════════════════════════════════════════════════════════════
-
-# KPS index reference:
-# 0=Head, 1=Neck, 2=RShoulder, 3=RArm, 4=RHand,
-# 5=LShoulder, 6=LArm, 7=LHand, 8=Spine, 9=Hips,
-# 10=RUpperLeg, 11=RLeg, 12=RFoot,
-# 13=LUpperLeg, 14=LLeg, 15=LFoot, 16=LToe, 17=RToe
-
-# Limb groups: name → joint indices (in order from root to tip)
-LIMB_GROUPS = {
-    "right arm":  [2, 3, 4],    # RShoulder → RArm → RHand
-    "left arm":   [5, 6, 7],    # LShoulder → LArm → LHand
-    "right leg":  [10, 11, 12], # RUpperLeg → RLeg → RFoot
-    "left leg":   [13, 14, 15], # LUpperLeg → LLeg → LFoot
-    "torso":      [9, 8, 1],    # Hips → Spine → Neck
-    "head":       [1, 0],       # Neck → Head
-}
-
 
 def _norm_kps(k: np.ndarray) -> np.ndarray:
+    """Centre on hips, normalise by torso height."""
     k = k.astype(float)
     k = k - k[9:10]
     torso = np.linalg.norm(k[1] - k[9]) + 1e-6
@@ -350,7 +206,7 @@ def _norm_kps(k: np.ndarray) -> np.ndarray:
 
 
 def _err_to_score(err: float) -> float:
-    """Piecewise mapping from alignment error to 0-100 score."""
+    """Piecewise nonlinear mapping: alignment error → 0-100 score."""
     if err < 0.35:
         score = 90.0 + (0.35 - err) / 0.35 * 10.0
     elif err < 0.60:
@@ -363,24 +219,19 @@ def _err_to_score(err: float) -> float:
 
 
 def _limb_err(a_norm: np.ndarray, b_norm: np.ndarray, indices: list) -> float:
-    """Mean joint distance for a subset of joints, after local alignment."""
-    sa = a_norm[indices]
-    sb = b_norm[indices]
-    # center each limb on its root joint
-    sa = sa - sa[0:1]
-    sb = sb - sb[0:1]
+    """Mean joint distance for a limb subset, after local centering."""
+    sa = a_norm[indices] - a_norm[indices][0:1]
+    sb = b_norm[indices] - b_norm[indices][0:1]
     scale = max(np.sqrt((sa**2).sum()), np.sqrt((sb**2).sum()), 1e-6)
-    sa /= scale
-    sb /= scale
-    return float(np.mean(np.linalg.norm(sa - sb, axis=1)))
+    return float(np.mean(np.linalg.norm(sa/scale - sb/scale, axis=1)))
 
 
 def _elevation_label(dy: float) -> str:
     """dy = tip_y - root_y in image coords (y increases downward)."""
-    if dy < -0.3:   return "raised high"
-    if dy < -0.05:  return "raised"
-    if dy <  0.05:  return "horizontal"
-    if dy <  0.3:   return "lowered"
+    if dy < -0.3:  return "raised high"
+    if dy < -0.05: return "raised"
+    if dy <  0.05: return "horizontal"
+    if dy <  0.3:  return "lowered"
     return "pointing down"
 
 
@@ -390,32 +241,22 @@ def _limb_feedback(limb: str, ref_kps: np.ndarray, user_kps: np.ndarray,
     r = ref_kps[indices].astype(float)
     u = user_kps[indices].astype(float)
 
-    # Elevation: compare tip relative to root (y axis, image coords)
-    ref_dy  = (r[-1] - r[0])[1]
-    user_dy = (u[-1] - u[0])[1]
-    diff_dy = user_dy - ref_dy  # positive = user is lower than reference
-
-    # Horizontal spread: tip x relative to root x
-    ref_dx  = (r[-1] - r[0])[0]
-    user_dx = (u[-1] - u[0])[0]
-    diff_dx = user_dx - ref_dx
-
+    diff_dy = (u[-1] - u[0])[1] - (r[-1] - r[0])[1]
+    diff_dx = (u[-1] - u[0])[0] - (r[-1] - r[0])[0]
     messages = []
 
-    # Vertical correction
     if abs(diff_dy) > 0.15:
         direction = "lower" if diff_dy > 0 else "higher"
         amount    = "much" if abs(diff_dy) > 0.35 else "slightly"
-        target    = _elevation_label(ref_dy)
-        messages.append(f"should be {target} — move it {amount} {direction}")
+        messages.append(
+            f"should be {_elevation_label((r[-1]-r[0])[1])} — move it {amount} {direction}"
+        )
 
-    # Horizontal correction
     if abs(diff_dx) > 0.15:
         direction = "more to the left" if diff_dx > 0 else "more to the right"
         amount    = "much" if abs(diff_dx) > 0.35 else "slightly"
         messages.append(f"extend it {amount} {direction}")
 
-    # Bend: for limbs with 3 joints, check middle-joint angle
     if len(indices) == 3:
         def _angle(pts):
             v1 = pts[0] - pts[1]
@@ -423,12 +264,10 @@ def _limb_feedback(limb: str, ref_kps: np.ndarray, user_kps: np.ndarray,
             n1, n2 = np.linalg.norm(v1), np.linalg.norm(v2)
             if n1 < 1e-6 or n2 < 1e-6:
                 return 180.0
-            return float(np.degrees(np.arccos(np.clip(np.dot(v1/n1, v2/n2), -1, 1))))
-
-        ref_angle  = _angle(r)
-        user_angle = _angle(u)
-        diff_angle = user_angle - ref_angle
-
+            return float(np.degrees(
+                np.arccos(np.clip(np.dot(v1/n1, v2/n2), -1, 1))
+            ))
+        diff_angle = _angle(u) - _angle(r)
         if abs(diff_angle) > 20:
             bend_dir = "less" if diff_angle > 0 else "more"
             amount   = "significantly" if abs(diff_angle) > 40 else "slightly"
@@ -445,32 +284,27 @@ def _generate_feedback(ref_kps: np.ndarray, user_kps: np.ndarray) -> str:
     user_n = _norm_kps(user_kps)
 
     limb_scores = {}
-    for limb, indices in LIMB_GROUPS.items():
-        err = _limb_err(ref_n, user_n, indices)
+    for limb, idx in LIMB_GROUPS.items():
+        err = _limb_err(ref_n, user_n, idx)
         limb_scores[limb] = (err, _err_to_score(err))
 
-    # Sort by score ascending (worst first)
     sorted_limbs = sorted(limb_scores.items(), key=lambda x: x[1][1])
 
-    issues = []
-    praise = []
-
+    issues, praise = [], []
     for limb, (err, score) in sorted_limbs:
-        indices = LIMB_GROUPS[limb]
         if score >= 80:
             praise.append(limb)
         else:
-            msg = _limb_feedback(limb, ref_kps, user_kps, indices)
+            msg = _limb_feedback(limb, ref_kps, user_kps, LIMB_GROUPS[limb])
             if msg:
                 issues.append((score, msg))
 
     lines = []
     if praise:
         lines.append(f"✓ Looking good: {', '.join(praise)}.")
-
     if issues:
         lines.append("✗ Needs adjustment:")
-        for _, msg in issues[:3]:  # top 3 worst
+        for _, msg in issues[:3]:
             lines.append(msg)
     else:
         lines.append("Great overall pose match!")
@@ -483,11 +317,8 @@ def _similarity_score_2d(kps_a: np.ndarray, kps_b: np.ndarray) -> float:
 
     a = _norm_kps(kps_a.copy())
     b = _norm_kps(kps_b.copy())
-
-    sa = np.sqrt((a**2).sum()) + 1e-6
-    sb = np.sqrt((b**2).sum()) + 1e-6
-    a /= sa
-    b /= sb
+    a /= np.sqrt((a**2).sum()) + 1e-6
+    b /= np.sqrt((b**2).sum()) + 1e-6
 
     try:
         _, a_al, b_al = procrustes(a, b)
@@ -499,15 +330,12 @@ def _similarity_score_2d(kps_a: np.ndarray, kps_b: np.ndarray) -> float:
     p50 = float(np.percentile(per_joint_err, 50))
     p90 = float(np.percentile(per_joint_err, 90))
     err = 0.5 * p50 + 0.5 * p90
-
     _log.debug(f"similarity p50={p50:.4f} p90={p90:.4f} err={err:.4f}")
 
     score = _err_to_score(err)
-
     if not (0.0 <= score <= 100.0):
-        _log.warning(f"bad score value {score}, clamping to 0")
+        _log.warning(f"bad score {score}, clamping to 0")
         score = 0.0
-
     return round(score, 1)
 
 
@@ -523,8 +351,9 @@ def _score_label(score: float) -> str:
 # Visualisation
 # ════════════════════════════════════════════════════════════════════════════
 
-def _draw_skeleton(img_pil, kps,
-                   color_bone=(0, 180, 255), color_joint=(255, 60, 60)):
+def _draw_skeleton(img_pil: Image.Image, kps: np.ndarray,
+                   color_bone=(0, 180, 255),
+                   color_joint=(255, 60, 60)) -> Image.Image:
     out  = img_pil.convert("RGB").copy()
     draw = ImageDraw.Draw(out)
     W, H = out.size
@@ -538,38 +367,6 @@ def _draw_skeleton(img_pil, kps,
         draw.ellipse([x-r, y-r, x+r, y+r], fill=color_joint, outline=(0,0,0))
     return out
 
-def _label_bar(img_pil, text, bg_color):
-    out  = img_pil.convert("RGB").copy()
-    draw = ImageDraw.Draw(out)
-    W, H = out.size
-    bar_h = max(28, H // 14)
-    draw.rectangle([0, 0, W, bar_h], fill=bg_color)
-    draw.text((8, 4), text, fill=(255, 255, 255))
-    return out
-
-def _side_by_side(img_a, img_b):
-    h = max(img_a.height, img_b.height)
-    def _rh(im):
-        r = h / im.height
-        return im.resize((int(im.width * r), h), Image.LANCZOS)
-    a, b = _rh(img_a), _rh(img_b)
-    out  = Image.new("RGB", (a.width + b.width, h), (240, 240, 240))
-    out.paste(a, (0, 0))
-    out.paste(b, (a.width, 0))
-    return out
-
-def _score_banner(img_pil, score: float) -> Image.Image:
-    W, H  = img_pil.size
-    bar_h = max(48, H // 10)
-    out   = Image.new("RGB", (W, H + bar_h), (30, 30, 30))
-    out.paste(img_pil, (0, 0))
-    draw  = ImageDraw.Draw(out)
-    bg    = (34,139,34) if score >= 75 else (200,160,0) if score >= 50 else (180,40,40)
-    draw.rectangle([0, H, W, H + bar_h], fill=bg)
-    label = f"Pose Similarity: {score}%  —  {_score_label(score)}"
-    draw.text(((W - len(label) * 6) // 2, H + bar_h // 4), label, fill=(255,255,255))
-    return out
-
 
 # ════════════════════════════════════════════════════════════════════════════
 # SketchPadModel
@@ -577,53 +374,33 @@ def _score_banner(img_pil, score: float) -> Image.Image:
 
 class SketchPadModel:
     """
-    Phase 1 — upload sketch:    runs inference, saves joints+kps+overlay to disk,
-                                 returns overlay image.
-    Phase 2 — upload reference: loads phase-1 data, runs inference on reference,
-                                 compares 2D keypoints, returns overlay + score.
+    Phase 1 — upload sketch:    runs HRNet, saves 2D keypoints + overlay to disk.
+    Phase 2 — upload reference: loads Phase 1 data, runs HRNet on reference,
+                                 compares keypoints, returns score + feedback.
     """
 
     def __init__(self):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        _log.info(f"Using device: {self.device}")
+        _log.info("Loading HRNet")
         self.model_hrnet = cv2.dnn.readNetFromONNX(HRNET_PATH)
-        self.model_spin  = _HMR(SMPL_MEAN).to(self.device)
-        ckpt  = torch.load(SPIN_PATH, map_location="cpu", weights_only=False)
-        state = ckpt["model"] if "model" in ckpt else ckpt
-        self.model_spin.load_state_dict(state, strict=False)
-        self.model_spin.eval()
+        # Uncomment for GPU acceleration on T4:
+        # self.model_hrnet.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
+        # self.model_hrnet.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
+        _log.info("HRNet ready")
 
     @staticmethod
     def _to_bgr(img: Image.Image) -> np.ndarray:
         return cv2.cvtColor(np.array(img.convert("RGB")), cv2.COLOR_RGB2BGR)
 
-    def _run(self, img: Image.Image):
-        """Returns (joints_3d (22,3), kps (18,2), overlay PIL Image)."""
+    def _run(self, img: Image.Image) -> tuple:
+        """Returns (kps (18,2), overlay PIL Image)."""
         bgr = self._to_bgr(img)
-
-        # HRNet — 2D keypoints (used for similarity)
         blob, c, s = _hrnet_preprocess(bgr)
         self.model_hrnet.setInput(blob)
         heatmaps = self.model_hrnet.forward()
         kps, _   = _get_final_preds(heatmaps, c[None], s[None])
         kps      = kps.squeeze(0)   # (18, 2)
-
-        # SPIN — 3D joints (kept for future use but not used in similarity)
-        inp = _spin_preprocess(bgr).to(self.device)
-        with torch.no_grad():
-            with torch.autocast(
-                device_type="cuda",
-                dtype=torch.float16,
-                enabled=self.device.type == "cuda",
-            ):
-                rotmat, _, camera = self.model_spin(inp)
-        joints_3d = _rotmat_to_joints(
-            rotmat.squeeze(0).cpu().numpy(),
-            camera.squeeze(0).cpu().numpy(),
-        )
-
-        overlay = _draw_skeleton(img, kps)
-        return joints_3d, kps, overlay
+        overlay  = _draw_skeleton(img, kps)
+        return kps, overlay
 
     def process(self, image: Optional[Image.Image], prompt: str) -> dict:
         if not _has_sketch():
@@ -634,8 +411,8 @@ class SketchPadModel:
                     "image": None,
                 }
             _log.info("Phase 1: running inference on sketch")
-            joints_3d, kps, overlay = self._run(image)
-            _save_sketch(joints_3d, kps, overlay)
+            kps, overlay = self._run(image)
+            _save_sketch(kps, overlay)
             return {
                 "text":  "✅ Sketch saved! Now upload your reference sketch.",
                 "image": overlay,
@@ -644,25 +421,24 @@ class SketchPadModel:
         else:
             # ── Phase 2: sketch exists, waiting for reference ─────────────
             if image is None:
-                _, _, sk_overlay = _load_sketch()
+                _, sk_overlay = _load_sketch()
                 return {
                     "text":  "Now upload your reference sketch to compare.",
                     "image": sk_overlay,
                 }
             _log.info("Phase 2: running inference on reference")
-            joints_3d, kps, overlay = self._run(image)
-            sk_joints, sk_kps, _    = _load_sketch()
-            score    = round(float(_similarity_score_2d(sk_kps, kps)), 1)
-            feedback = _generate_feedback(sk_kps, kps)
+            kps, overlay  = self._run(image)
+            sk_kps, _     = _load_sketch()
+            score         = round(float(_similarity_score_2d(sk_kps, kps)), 1)
+            feedback      = _generate_feedback(sk_kps, kps)
             _log.info(f"Similarity score: {score}%")
             _log.debug(f"Feedback: {feedback}")
             _clear_sketch()
-            text = (
-                f"✅ Pose similarity: {score}% — {_score_label(score)}\n\n"
-                f"{feedback}"
-            )
             return {
-                "text":  text,
+                "text":  (
+                    f"✅ Pose similarity: {score}% — {_score_label(score)}\n\n"
+                    f"{feedback}"
+                ),
                 "image": overlay,
             }
 
