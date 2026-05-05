@@ -1,0 +1,6 @@
+accelerate
+controlnet-aux
+diffusers
+torch
+transformers
+peft
