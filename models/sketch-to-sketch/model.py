@@ -75,7 +75,7 @@ class SketchPadModel:
             # print(f"🎨 Starting Variant {k+1}/{self.num_images}...", flush=True)
             seed = np.random.randint(1000000)
 
-            new_image = self.sketch(prompt, negative_prompt, processed_canvas, seed=seed, num_steps=20)
+            new_image = self.sketch(prompt, negative_prompt, processed_canvas, seed=seed, num_steps=10)
             self._debug_save(new_image, prefix=f"variant_{k}")
             to_return.append(new_image)
 
@@ -101,9 +101,9 @@ class SketchPadModel:
             control_image,
             negative_prompt=negative_prompt,
             num_inference_steps=num_steps,
-            guidance_scale=1.5,
+            guidance_scale=1.65,
             generator=generator,
-            controlnet_conditioning_scale=0.8
+            controlnet_conditioning_scale=0.5
         ).images
 
 
@@ -150,59 +150,39 @@ class SketchPadModel:
 
 
     def process(self, image: Image.Image | None, prompt: str) -> dict:
-        """
-        Args:
-            image  : The current canvas image as a PIL Image, or None if the
-                     user hasn't uploaded one yet.
-            prompt : The user's text request.
-
-        Returns:
-            A dict with two keys:
-                "text"  (str)             — feedback / explanation for the user
-                "image" (PIL.Image | None) — the modified image, or None if
-                                             the canvas should stay unchanged
-        """
         if image is None:
             return {"text": "Please upload an image to the canvas first.", "image": None}
 
         if not prompt.strip():
             return {"text": "Please describe what you want to change.", "image": None}
-        result = self.run_sketching(prompt=prompt,negative_prompt=self.generate_negative_prompt(prompt),curr_sketch= image)
-            
-        output_image = result[-1]
-        
-        if not isinstance(output_image, Image.Image):
-            # Force conversion if it's a numpy array
-            output_image = Image.fromarray(np.uint8(output_image))
 
-        
-
-        return {
-            "text": f"Success: {prompt}",
-            "image": output_image, # The framework handles turning this into a string
-        }
-
-        # ── Your model logic here ──────────────────────────────────────────
         try:
-            result = self.run_sketching(prompt=prompt,negative_prompt=self.generate_negative_prompt(prompt),curr_sketch= image)
+            # 1. run_sketching returns a list: [variant1, ..., feedback_sketch]
+            results = self.run_sketching(
+                prompt=prompt,
+                negative_prompt=self.generate_negative_prompt(prompt),
+                curr_sketch=image
+            )
             
-            output_image = result[-1]
-            
-            if not isinstance(output_image, Image.Image):
-                # Force conversion if it's a numpy array
-                output_image = Image.fromarray(np.uint8(output_image))
+            # 2. Grab the first AI variant and the original sketch
+            sketch = image.convert("RGBA")
+            # results[0] is the first variant generated in your loop
+            sd_image = results[0].convert("RGBA").resize(sketch.size)
 
-            
+            # 3. Create the side-by-side comparison
+            merged = Image.new("RGBA", (sketch.width + sd_image.width, sketch.height))
+            merged.paste(sketch, (0, 0))
+            merged.paste(sd_image, (sketch.width, 0))
 
             return {
-                "text": f"Success: {prompt}",
-                "image": output_image, # The framework handles turning this into a string
+                "text": f"Success: Generated variants for '{prompt}'",
+                "image": merged,
             }
 
         except Exception as e:
-            print(f"🔥 CRITICAL ERROR: {e}", flush=True)
-            # Return a valid JSON dictionary even if the AI fails
+            print(f"🔥 ERROR: {e}")
             return {
-                "text": f"Error occurred: {str(e)}",
-                "image": image # Return original sketch so UI doesn't break
+                "text": f"An error occurred: {str(e)}",
+                "image": image 
             }
+        # ── Your model logic here ──────────────────────────────────────────
