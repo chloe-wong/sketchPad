@@ -1,11 +1,11 @@
 import React, { useRef, useState } from 'react';
 
-export default function EmotionWheel({ onSelect }) {
+export default function EmotionWheel({ onSelect, ganmutType }) {
   const svgRef = useRef(null);
   const windowRef = useRef(null);
 
   // Window Dragging State
-  const [position, setPosition] = useState({ x: 500, y: 100 }); 
+  const [position, setPosition] = useState({ x: 600, y: 100 }); 
   const [isDraggingWindow, setIsDraggingWindow] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
 
@@ -62,12 +62,21 @@ export default function EmotionWheel({ onSelect }) {
     const finalTheta = Math.round(degrees);
     const finalRho = Number(rho.toFixed(2));
 
+    // Cartesian Calculations (X/Y)
+    // Constrain the coordinates to the unit circle using the clamped rho
+    const finalX = Number((dx / maxRadius * (rho / (distance / maxRadius || 1))).toFixed(2));
+    const finalY = Number((dy / maxRadius * (rho / (distance / maxRadius || 1))).toFixed(2));
+
     setActivePoint({ 
       x: cx + (dx * (rho / (distance / maxRadius || 1))), 
       y: cy - (dy * (rho / (distance / maxRadius || 1))) 
     });
 
-    onSelect(`theta=${finalTheta} rho=${finalRho}`);
+    if (ganmutType === 'gaussian') {
+      onSelect(`x=${finalX} y=${finalY}`);
+    } else {
+      onSelect(`theta=${finalTheta} rho=${finalRho}`);
+    }
   };
 
   return (

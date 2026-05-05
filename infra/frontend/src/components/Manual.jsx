@@ -133,7 +133,30 @@ export default function Manual() {
             position: 'relative' 
         }}>
           
-          <h4>Emotion Map:</h4>
+          <h4>Linear vs. Gaussian Model:</h4>
+          <p>
+            Linear Model (Standard): Maps emotions using a straight line from a neutral center. Straightforward and good for distinct expressions but struggles with mixed emotions.
+            <br>
+            </br>
+            <br>
+            </br>
+            Gaussian Model (Advanced): Primary emotions are "peaks" on the map that smoothly fade into one another. Moving away from peaks decays the intensity of the emotion. Good at highly realistic, compound expressions (like being "happily surprised").
+            <br>
+            </br>
+            <br>
+            </br>
+          </p>
+
+          <h4>Gaussian Model:</h4>
+          <p>
+            X and Y are both between -1.0 and 1.0. x^2 + y^2 &lt;= 1
+            <br>
+            </br>
+            <br>
+            </br>
+          </p>
+          
+          <h4>Linear Model:</h4>
           <p>
             Magnitude (rho) is between 0.0 and 1.0, where 1.0 is the greatest intensity.
             <br>

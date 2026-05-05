@@ -21,11 +21,7 @@ export default function App() {
   // Derive active session
   const activeSession = sessions.find(s => s.localId === activeLocalId) || sessions[0]
 
-  const GANmutplaceholder = "\'theta={degrees} rho={magnitude}\', where degrees is 0 to 360, magnitude is 0 to 1"
   let defaultplaceholder = "Describe what you want to do… (Enter to send, Shift+Enter for newline)"
-  if(selectedModel == 'GANmut') {
-    defaultplaceholder = GANmutplaceholder;
-  }
 
   // Helper: update a single session by localId
   const updateSession = useCallback((localId, patch) => {
