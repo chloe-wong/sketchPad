@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from 'react'
 import MessageBubble from './MessageBubble'
+import EmotionWheel from './EmotionWheel'
 
-export default function ChatPanel({ messages, onSend, loading }) {
+export default function ChatPanel({ messages, onSend, loading, placeholder, selectedModel }) {
   const [text, setText] = useState('')
   const bottomRef = useRef()
 
@@ -39,11 +40,25 @@ export default function ChatPanel({ messages, onSend, loading }) {
         <div ref={bottomRef} />
       </div>
 
+      {selectedModel === 'GANmut' && (
+        <div className="emotion-wheel-wrapper" 
+        style={{ 
+            display: 'flex', 
+            justifyContent: 'flex-end', /* clinch right */
+            padding: '0 10px 10px 0'
+          }}
+        >
+          <EmotionWheel 
+            onSelect={(formattedString) => setText(formattedString)} 
+          />
+        </div>
+      )}
+
       <div className="chat-input-row">
         <textarea
           className="chat-input"
           rows={2}
-          placeholder="Describe what you want to do… (Enter to send, Shift+Enter for newline)"
+          placeholder={placeholder}
           value={text}
           onChange={e => setText(e.target.value)}
           onKeyDown={onKeyDown}

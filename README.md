@@ -4,6 +4,27 @@ An AI-powered art assistant with a pluggable model system. Team members build mo
 
 ---
 
+## Cloning the repo
+
+### Clone and pull the necessary submodules
+```bash
+git clone -b [branch] --recurse-submodules https://github.com/chloe-wong/sketchPad
+```
+Replace [branch] with the branch name (main, face, etc.)
+
+### If you already have the sketchPad repo cloned:
+```bash
+git switch [branch]
+```
+or
+```bash
+git checkout [branch]
+```
+then
+```bash
+cd models/GANmut && git submodule update --init --recursive
+```
+
 ## First-time setup
 
 ### 1. Backend
@@ -75,6 +96,7 @@ class SketchPadModel:
 - Only work inside your `models/<your_feature>/` folder
 - Do not modify anything in `infra/` or other model folders
 - Add all dependencies to your own `requirements.txt`
+- Remove all print statements in the code (or replace them with sys.stdout) as these can break your JSON output
 
 ---
 

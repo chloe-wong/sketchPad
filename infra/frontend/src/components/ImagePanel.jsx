@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
+// import EmotionWheel from './EmotionWheel'
 
-export default function ImagePanel({ currentImage, onUpload }) {
+export default function ImagePanel({ currentImage, onUpload }) { // selectedModel
   const inputRef = useRef()
   const [dragOver, setDragOver] = useState(false)
 
@@ -20,6 +21,7 @@ export default function ImagePanel({ currentImage, onUpload }) {
     <div className="image-panel">
       <div className="image-panel-header">Canvas</div>
 
+    {/* add emotion wheel here */}      
       {currentImage ? (
         <>
           <div className="image-display">
