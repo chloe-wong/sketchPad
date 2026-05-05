@@ -45,23 +45,6 @@ npm install --silent
 npm run build
 cd "$ROOT"
 
-# ── 5. Restart backend ────────────────────────────────────────────────────
-echo ""
-echo "--- Restarting backend ---"
-sudo systemctl restart sketchpad
-sleep 2
-if sudo systemctl is-active --quiet sketchpad; then
-    echo "  Backend is running."
-else
-    echo "  WARNING: Backend failed to start."
-    echo "  Check logs: sudo journalctl -u sketchpad -n 50"
-    exit 1
-fi
-
 echo ""
 echo "=== Deploy complete ==="
-echo ""
-echo "Useful commands:"
-echo "  Status:  sudo systemctl status sketchpad"
-echo "  Logs:    sudo journalctl -u sketchpad -f"
-echo "  Nginx:   sudo systemctl status nginx"
+echo "Restart the backend process to pick up changes."

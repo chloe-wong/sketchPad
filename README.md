@@ -22,7 +22,7 @@ git checkout [branch]
 ```
 then
 ```bash
-cd models/GANmut && git submodule update --init --recursive
+git submodule update --init --recursive
 ```
 
 ## First-time setup
