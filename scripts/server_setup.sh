@@ -29,12 +29,17 @@ else
     echo "  Node already installed: $(node --version)"
 fi
 
-# ── 3. Backend venv ───────────────────────────────────────────────────────
+# ── 3. Initialize submodules ──────────────────────────────────────────────
+echo ""
+echo "--- Initializing submodules ---"
+git -C "$ROOT" submodule update --init --recursive
+
+# ── 4. Backend venv ───────────────────────────────────────────────────────
 echo ""
 echo "--- Setting up backend ---"
 "$ROOT/scripts/setup_backend.sh"
 
-# ── 4. All existing model venvs ───────────────────────────────────────────
+# ── 5. All existing model venvs ───────────────────────────────────────────
 echo ""
 echo "--- Setting up model venvs ---"
 for model_dir in "$ROOT"/models/*/; do
@@ -44,7 +49,7 @@ for model_dir in "$ROOT"/models/*/; do
     "$ROOT/scripts/setup_model.sh" "$name"
 done
 
-# ── 5. Frontend build ─────────────────────────────────────────────────────
+# ── 6. Frontend build ─────────────────────────────────────────────────────
 echo ""
 echo "--- Building frontend ---"
 cd "$ROOT/infra/frontend"
@@ -52,7 +57,7 @@ npm install --silent
 npm run build
 cd "$ROOT"
 
-# ── 6. Nginx config ───────────────────────────────────────────────────────
+# ── 7. Nginx config ───────────────────────────────────────────────────────
 echo ""
 echo "--- Configuring Nginx ---"
 sudo tee "$NGINX_CONF" > /dev/null <<NGINX
@@ -97,7 +102,7 @@ sudo systemctl enable nginx
 sudo systemctl restart nginx
 echo "  Nginx configured and running."
 
-# ── 7. Systemd service for FastAPI backend ────────────────────────────────
+# ── 8. Systemd service for FastAPI backend ────────────────────────────────
 echo ""
 echo "--- Configuring systemd service ---"
 sudo tee "$SERVICE_FILE" > /dev/null <<SERVICE

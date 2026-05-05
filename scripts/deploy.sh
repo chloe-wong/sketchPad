@@ -12,6 +12,7 @@ echo "=== SketchPad Deploy ==="
 echo ""
 echo "--- Pulling latest code ---"
 git -C "$ROOT" pull origin main
+git -C "$ROOT" submodule update --init --recursive
 
 # ── 2. Set up any new model venvs ──────────────────────────────────────────
 # A model is "new" if its folder exists but has no .venv yet.
