@@ -21,11 +21,7 @@ export default function App() {
   // Derive active session
   const activeSession = sessions.find(s => s.localId === activeLocalId) || sessions[0]
 
-  const GANmutplaceholder = "\'theta={degrees} rho={magnitude}\', where degrees is 0 to 360, magnitude is 0 to 1"
   let defaultplaceholder = "Describe what you want to do… (Enter to send, Shift+Enter for newline)"
-  if(selectedModel == 'GANmut') {
-    defaultplaceholder = GANmutplaceholder;
-  }
 
   // Helper: update a single session by localId
   const updateSession = useCallback((localId, patch) => {
@@ -59,7 +55,25 @@ export default function App() {
   const handleImageUpload = async (file) => {
     setError(null)
     const previewUrl = URL.createObjectURL(file)
-    updateSession(activeSession.localId, { currentImage: previewUrl })
+    if (selectedModel === 'GANmut') {
+    // keep OG image in chat
+    const newImageMessage = {
+    id: Date.now(),
+    sender: 'user',
+    role: 'user',
+    type: 'image',
+    url: previewUrl,
+    label: 'Original Image',
+    text: 'Original image:', // auto adds the text prompt
+    image: previewUrl
+  };
+    updateSession(activeSession.localId, { 
+    currentImage: previewUrl,
+    messages: [...(activeSession.messages || []), newImageMessage] 
+  });
+} else {
+  updateSession(activeSession.localId, { currentImage: previewUrl })
+}
     try {
       if (activeSession.backendId) {
         await api.updateImage(activeSession.backendId, file)
