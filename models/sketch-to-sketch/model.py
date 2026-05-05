@@ -21,11 +21,12 @@ from diffusers import (
 import numpy as np
 import torch
 from datetime import datetime
-
+import multiprocessing
 
 class SketchPadModel:
     def __init__(self) -> None:
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        torch.set_num_threads(multiprocessing.cpu_count() // 2)
         controlnet = ControlNetModel.from_pretrained(
             'vsanimator/sketch-a-sketch'
         ).to(self.device)
@@ -35,6 +36,9 @@ class SketchPadModel:
         ).to(self.device)
         # print("🚀 Loading ControlNet...", flush=True)
 
+        self.pipe.load_lora_weights("latent-consistency/lcm-lora-sdv1-5")
+        self.pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(self.pipe.scheduler.config)
+
         self.output_dir = "debug_outputs" 
         os.makedirs(self.output_dir, exist_ok=True)
 
@@ -42,12 +46,8 @@ class SketchPadModel:
             'lllyasviel/Annotators'
         ).to(self.device)
 
-        self.num_images = 1
-        self.res = (100,100)
-
-        self.pipe.safety_checker = None
-        self.pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(self.pipe.scheduler.config)
-
+        self.num_images = 3
+        self.res = (512,512)
     
     def _preprocess_sketch(self, curr_sketch):
         if curr_sketch is None:
@@ -75,7 +75,7 @@ class SketchPadModel:
             # print(f"🎨 Starting Variant {k+1}/{self.num_images}...", flush=True)
             seed = np.random.randint(1000000)
 
-            new_image = self.sketch(prompt, negative_prompt, processed_canvas, seed=seed, num_steps=2)
+            new_image = self.sketch(prompt, negative_prompt, processed_canvas, seed=seed, num_steps=20)
             self._debug_save(new_image, prefix=f"variant_{k}")
             to_return.append(new_image)
 
@@ -101,8 +101,9 @@ class SketchPadModel:
             control_image,
             negative_prompt=negative_prompt,
             num_inference_steps=num_steps,
+            guidance_scale=1.5,
             generator=generator,
-            controlnet_conditioning_scale=1.0
+            controlnet_conditioning_scale=0.8
         ).images
 
 
