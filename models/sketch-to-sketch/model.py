@@ -30,7 +30,7 @@ class SketchPadModel:
             'vsanimator/sketch-a-sketch'
         ).to(self.device)
         self.pipe = StableDiffusionControlNetPipeline.from_pretrained(
-            'runwayml/stable-diffusion-v1-5',
+            'nitrosocke/Ghibli-Diffusion',
             controlnet=controlnet
         ).to(self.device)
         # print("🚀 Loading ControlNet...", flush=True)
@@ -75,7 +75,7 @@ class SketchPadModel:
             # print(f"🎨 Starting Variant {k+1}/{self.num_images}...", flush=True)
             seed = np.random.randint(1000000)
 
-            new_image = self.sketch(prompt, negative_prompt, processed_canvas, seed=seed, num_steps=2)
+            new_image = self.sketch(prompt, negative_prompt, processed_canvas, seed=seed, num_steps=20)
             self._debug_save(new_image, prefix=f"variant_{k}")
             to_return.append(new_image)
 
@@ -102,7 +102,7 @@ class SketchPadModel:
             negative_prompt=negative_prompt,
             num_inference_steps=num_steps,
             generator=generator,
-            controlnet_conditioning_scale=1.0
+            controlnet_conditioning_scale=0.7
         ).images
 
 
